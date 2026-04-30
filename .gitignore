@@ -1,0 +1,54 @@
+# API Keys & Private Data (NEVER commit!)
+.env
+*.env
+
+# SmartTrader Memory (your trading history)
+SmartTrader/memory/
+SmartTrader/.env
+
+# Logs
+*.log
+logs/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+SmartTrader/venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Output (optional - can commit if you want to share results)
+SmartTrader/output/
+*.png
+*.csv
+*.json
+
+# PyTorch / ML
+*.pth
+*.pt
+*.ckpt
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
