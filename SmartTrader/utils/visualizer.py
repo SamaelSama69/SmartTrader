@@ -3,12 +3,15 @@ Visualization Utilities
 Creates charts and dashboards for analysis results
 """
 
+import logging
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from config import OUTPUT_DIR
+
+logger = logging.getLogger(__name__)
 
 # Set style
 plt.style.use('seaborn-v0_8-darkgrid')
@@ -29,7 +32,7 @@ class Visualizer:
             hist = yf.Ticker(ticker).history(period='6mo')
 
             if hist.empty:
-                print(f"No data for {ticker}")
+                logger.warning(f"No data for {ticker}")
                 return
 
             fig, ax = plt.subplots(figsize=(12, 6))
@@ -51,10 +54,10 @@ class Visualizer:
             output_path = self.output_dir / f"{ticker}_price_chart.png"
             plt.savefig(output_path, dpi=150)
             plt.close()
-            print(f"Saved: {output_path}")
+            logger.info(f"Saved: {output_path}")
 
         except Exception as e:
-            print(f"Chart error: {e}")
+            logger.error(f"Chart error: {e}")
 
     def plot_sentiment_gauge(self, sentiment_score: float, ticker: str):
         """Create a gauge chart for sentiment"""
@@ -81,16 +84,16 @@ class Visualizer:
             output_path = self.output_dir / f"{ticker}_sentiment.png"
             plt.savefig(output_path, dpi=150)
             plt.close()
-            print(f"Saved: {output_path}")
+            logger.info(f"Saved: {output_path}")
 
         except Exception as e:
-            print(f"Gauge error: {e}")
+            logger.error(f"Gauge error: {e}")
 
     def plot_backtest_results(self, backtest_results: Dict):
         """Plot backtest equity curve"""
         try:
             if 'error' in backtest_results:
-                print(f"Cannot plot: {backtest_results['error']}")
+                logger.warning(f"Cannot plot: {backtest_results['error']}")
                 return
 
             # This is simplified - would need equity curve data
@@ -116,10 +119,10 @@ class Visualizer:
             output_path = self.output_dir / "backtest_results.png"
             plt.savefig(output_path, dpi=150)
             plt.close()
-            print(f"Saved: {output_path}")
+            logger.info(f"Saved: {output_path}")
 
         except Exception as e:
-            print(f"Backtest plot error: {e}")
+            logger.error(f"Backtest plot error: {e}")
 
     def plot_screener_results(self, results: List[Dict]):
         """Plot top screened stocks"""
@@ -141,10 +144,10 @@ class Visualizer:
             output_path = self.output_dir / "screener_results.png"
             plt.savefig(output_path, dpi=150)
             plt.close()
-            print(f"Saved: {output_path}")
+            logger.info(f"Saved: {output_path}")
 
         except Exception as e:
-            print(f"Screener plot error: {e}")
+            logger.error(f"Screener plot error: {e}")
 
     def create_summary_dashboard(self, analysis: Dict):
         """Create a summary dashboard image"""
@@ -209,7 +212,7 @@ class Visualizer:
             output_path = self.output_dir / f"{analysis.get('ticker', 'dashboard')}_summary.png"
             plt.savefig(output_path, dpi=150)
             plt.close()
-            print(f"Saved: {output_path}")
+            logger.info(f"Saved: {output_path}")
 
         except Exception as e:
-            print(f"Dashboard error: {e}")
+            logger.error(f"Dashboard error: {e}")

@@ -3,10 +3,14 @@ Indian-Specific Technical Indicators
 Critical indicators used by Indian traders for NSE/BSE markets
 """
 
+import logging
 import pandas as pd
 import numpy as np
+import pytz
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, date
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_vwap(df: pd.DataFrame, anchor: str = 'day') -> pd.Series:
@@ -53,10 +57,14 @@ def calculate_pivot_points(df: pd.DataFrame, method: str = 'classic') -> Dict[st
     if df.empty or not all(col in df.columns for col in ['High', 'Low', 'Close']):
         return {}
 
-    # Use previous day's data for pivot calculation
-    prev_high = df['High'].iloc[-1]
-    prev_low = df['Low'].iloc[-1]
-    prev_close = df['Close'].iloc[-1]
+    if len(df) < 2:
+        logger.warning("Not enough data for pivot points (need at least 2 rows)")
+        return {}
+
+    # Use previous day's data for pivot calculation (iloc[-2] to get prior day)
+    prev_high = df['High'].iloc[-2]
+    prev_low = df['Low'].iloc[-2]
+    prev_close = df['Close'].iloc[-2]
 
     pivot = (prev_high + prev_low + prev_close) / 3
 
@@ -126,10 +134,14 @@ def calculate_cpr(df: pd.DataFrame) -> Dict[str, float]:
     if df.empty or not all(col in df.columns for col in ['High', 'Low', 'Close']):
         return {}
 
-    # Use previous day's data
-    prev_high = df['High'].iloc[-1]
-    prev_low = df['Low'].iloc[-1]
-    prev_close = df['Close'].iloc[-1]
+    if len(df) < 2:
+        logger.warning("Not enough data for CPR (need at least 2 rows)")
+        return {}
+
+    # Use previous day's data (iloc[-2] to get prior day)
+    prev_high = df['High'].iloc[-2]
+    prev_low = df['Low'].iloc[-2]
+    prev_close = df['Close'].iloc[-2]
 
     # Calculate pivots
     pivot = (prev_high + prev_low + prev_close) / 3
@@ -320,7 +332,8 @@ def is_expiry_day() -> bool:
     Check if today is expiry day (Thursday for Indian markets)
     Also checks for holiday adjustments
     """
-    today = datetime.now()
+    ist = pytz.timezone('Asia/Kolkata')
+    today = datetime.now(ist)
     # Nifty/BankNifty expire on Thursday
     return today.weekday() == 3  # 3 = Thursday
 
@@ -329,5 +342,6 @@ def is_budget_day() -> bool:
     """
     Check if today is Budget day (February 1st)
     """
-    today = datetime.now()
+    ist = pytz.timezone('Asia/Kolkata')
+    today = datetime.now(ist)
     return today.month == 2 and today.day == 1

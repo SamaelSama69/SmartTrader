@@ -41,7 +41,7 @@ class LifecyclePrediction:
         return {'predictions': {}, 'metadata': {'total': 0, 'active': 0, 'closed': 0}}
 
     def _save_predictions(self):
-        """Save predictions to memory file"""
+        """Atomically save predictions to memory file"""
         self.predictions['metadata']['total'] = len(self.predictions['predictions'])
         self.predictions['metadata']['active'] = sum(
             1 for p in self.predictions['predictions'].values() if p['status'] == 'ACTIVE'
@@ -49,8 +49,25 @@ class LifecyclePrediction:
         self.predictions['metadata']['closed'] = sum(
             1 for p in self.predictions['predictions'].values() if p['status'] in ['CLOSED', 'STOPPED']
         )
-        with open(self.memory_file, 'w') as f:
-            json.dump(self.predictions, f, indent=2, default=str)
+
+        import shutil
+        import tempfile
+
+        # Write to temp file first
+        temp_file = self.memory_file.with_suffix('.tmp')
+        try:
+            with open(temp_file, 'w') as f:
+                json.dump(self.predictions, f, indent=2, default=str)
+            # Atomic replace
+            shutil.move(str(temp_file), str(self.memory_file))
+
+            # Remove old backup if exists
+            if self.memory_file.with_suffix('.bak').exists():
+                self.memory_file.with_suffix('.bak').unlink()
+        except Exception as e:
+            print(f"Error saving predictions: {e}")
+            if temp_file.exists():
+                temp_file.unlink()
 
     def create_prediction(self, ticker: str, entry_signal: str,
                          entry_price: float, analysis: Dict) -> Dict:
@@ -184,6 +201,8 @@ class LifecyclePrediction:
             'pnl_pct': float(pnl_pct),
             'pnl_dollars': float(pnl_dollars)
         }
+        # Calculate max price BEFORE appending current update
+        historical_prices = [u['price'] for u in pred['updates']]
         pred['updates'].append(update)
 
         # Check exit conditions
@@ -209,8 +228,8 @@ class LifecyclePrediction:
 
         # 3. Trailing stop check (if up 5%, sell if drops 3% from high)
         if pnl_pct > 5:
-            # Get highest price seen
-            max_price = max([entry_price] + [u['price'] for u in pred['updates']])
+            # Get highest price seen (excluding current update)
+            max_price = max([entry_price] + historical_prices)
             trailing_stop = max_price * 0.97  # 3% below high
             if current_price <= trailing_stop:
                 action_needed = {
@@ -275,10 +294,13 @@ class LifecyclePrediction:
 
         # 3. Technical indicators (if hist provided)
         if hist is not None and len(hist) > 1:
-            # RSI check
+            # RSI check (pandas implementation, no talib dependency)
             try:
-                import talib as ta
-                rsi = ta.RSI(hist['Close'].values, timeperiod=14)[-1]
+                delta = hist['Close'].diff()
+                gain = delta.where(delta > 0, 0).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / loss
+                rsi = (100 - (100 / (1 + rs))).iloc[-1]
                 if rsi > 75:
                     return {
                         'sell': True,
@@ -286,7 +308,7 @@ class LifecyclePrediction:
                         'confidence': 0.80,
                         'prediction_id': pred['id']
                     }
-            except:
+            except Exception as e:
                 pass
 
         # 4. Time-based exit (held > 45 days)
@@ -406,6 +428,44 @@ class LifecyclePrediction:
     def get_prediction_summary(self, prediction_id: str) -> Optional[Dict]:
         """Get a summary of a specific prediction"""
         return self.predictions['predictions'].get(prediction_id)
+
+    def cleanup_old_predictions(self, max_age_days: int = 90):
+        """
+        Remove predictions older than max_age_days to prevent memory bloat
+        Closes any active predictions that have been open too long
+        """
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+        to_remove = []
+
+        for pred_id, pred in self.predictions['predictions'].items():
+            # Get creation time
+            pred_time_str = pred.get('created_at', pred.get('entry', {}).get('date', '2000-01-01'))
+            pred_time = datetime.fromisoformat(pred_time_str) if 'T' in pred_time_str else datetime.strptime(pred_time_str, '%Y-%m-%d %H:%M:%S')
+
+            # Remove if older than cutoff
+            if pred_time < cutoff:
+                # If still active, close it first
+                if pred['status'] == 'ACTIVE':
+                    pred['status'] = 'CLOSED'
+                    pred['exit'] = {
+                        'price': 0.0,
+                        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'reason': 'Automatic cleanup - prediction too old',
+                        'pnl_pct': 0.0,
+                        'pnl_dollars': 0.0
+                    }
+                    pred['closed_at'] = datetime.now().isoformat()
+                to_remove.append(pred_id)
+
+        # Remove old predictions
+        for pred_id in to_remove:
+            del self.predictions['predictions'][pred_id]
+
+        if to_remove:
+            self._save_predictions()
+            print(f"Cleaned up {len(to_remove)} old predictions")
+
+        return len(to_remove)
 
 
 def test_lifecycle_manager():

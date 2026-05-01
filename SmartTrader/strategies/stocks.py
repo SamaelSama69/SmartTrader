@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import requests
 
-from config import *
+from config import STOP_LOSS_ATR_MULTIPLIER, TAKE_PROFIT_RR_RATIO
 from utils.sentiment_analyzer import SentimentAnalyzer, TechnicalSentimentAnalyzer
 from utils.memory_manager import PredictionMemory
 
@@ -82,12 +82,20 @@ class StockStrategy:
             current_price = hist['Close'].iloc[-1]
             result['current_price'] = round(current_price, 2)
 
+            # ATR-based targets (matches get_swing_trade_setup logic)
+            high_low = hist['High'] - hist['Low']
+            high_close = np.abs(hist['High'] - hist['Close'].shift())
+            low_close = np.abs(hist['Low'] - hist['Close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = np.max(ranges, axis=1)
+            atr = true_range.rolling(14).mean().iloc[-1]
+
             if signal == 'BUY':
-                result['price_target'] = round(current_price * 1.10, 2)  # 10% target
-                result['stop_loss'] = round(current_price * 0.95, 2)  # 5% stop
+                result['price_target'] = round(current_price + atr * STOP_LOSS_ATR_MULTIPLIER * TAKE_PROFIT_RR_RATIO, 2)
+                result['stop_loss'] = round(current_price - atr * STOP_LOSS_ATR_MULTIPLIER, 2)
             elif signal == 'SELL':
-                result['price_target'] = round(current_price * 0.90, 2)
-                result['stop_loss'] = round(current_price * 1.05, 2)
+                result['price_target'] = round(current_price - atr * STOP_LOSS_ATR_MULTIPLIER * TAKE_PROFIT_RR_RATIO, 2)
+                result['stop_loss'] = round(current_price + atr * STOP_LOSS_ATR_MULTIPLIER, 2)
 
             # 6. Store in memory
             self.memory.add_prediction(ticker, result)

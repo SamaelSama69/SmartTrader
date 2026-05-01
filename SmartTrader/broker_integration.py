@@ -1,16 +1,17 @@
 """
 Broker Integration for Indian Markets
-Supports Zerodha (Kite Connect), Groww, and Paytm Money
+Supports Zerodha (Kite Connect)
 One-click auto-trading with easy setup
 """
 
+import os
 import requests
 import json
 from typing import Dict, List, Optional
 from datetime import datetime
 import time
 
-from config import *
+# config import removed (uses os.getenv directly)
 
 
 class ZerodhaBroker:
@@ -124,41 +125,6 @@ class ZerodhaBroker:
             return []
 
 
-class GrowwBroker:
-    """
-    Groww API Integration (if available) or Web Automation
-    Note: Groww doesn't have a public API, so using web automation
-    """
-
-    def __init__(self):
-        self.session = requests.Session()
-        self.logged_in = False
-
-    def placeholder(self):
-        """Groww integration requires their mobile app or web automation"""
-        return {
-            'note': 'Groww does not have a public API',
-            'suggestion': 'Use Zerodha or Upstox for API-based trading',
-            'alternative': 'Manual order placement with alerts'
-        }
-
-
-class PaytmMoneyBroker:
-    """
-    Paytm Money API Integration
-    Note: Limited API access, typically requires partnership
-    """
-
-    def __init__(self):
-        self.session = requests.Session()
-
-    def placeholder(self):
-        """Paytm Money has limited API access"""
-        return {
-            'note': 'Paytm Money API requires partnership',
-            'suggestion': 'Use Zerodha for automated trading',
-            'alternative': 'Use their mobile app for manual trading'
-        }
 
 
 class BrokerManager:

@@ -9,11 +9,15 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import json
+import time
+import logging
+import yfinance as yf
+import pandas as pd
 
 # Add project to path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import *
+from config import OUTPUT_DIR
 from utils.data_fetcher import MarketDataFetcher, NewsFetcher, RedditSentimentFetcher
 from utils.sentiment_analyzer import SentimentAnalyzer, TechnicalSentimentAnalyzer
 from utils.screener import SmartScreener
@@ -29,6 +33,10 @@ from utils.lifecycle_manager import LifecyclePrediction
 from utils.nse_data import NSEDataFetcher, convert_to_nse_format, convert_from_nse_format
 from utils.indian_indicators import is_expiry_day, is_budget_day
 import indian_config as indian_cfg
+import schedule
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 
 class SmartTrader:
@@ -49,6 +57,8 @@ class SmartTrader:
         self.tech_sentiment = TechnicalSentimentAnalyzer()
         self.screener = SmartScreener()
         self.memory = PredictionMemory()
+        # Auto-verify past predictions on startup
+        self.memory.auto_verify_outcomes()
         self.market_context = MarketContextMemory()
         self.backtester = Backtester()
         self.visualizer = Visualizer()
@@ -65,21 +75,21 @@ class SmartTrader:
         self.lifecycle_manager = LifecyclePrediction()
 
         # Print banner
-        print("=" * 60)
+        logger.info("=" * 60)
         if self.market == 'IN':
-            print("  SmartTrader - Indian Market Analysis System (NSE/BSE)")
-            print("=" * 60)
-            print(f"  Market: NSE/BSE")
-            print(f"  Trading Hours: 9:15 AM - 3:30 PM IST")
-            print(f"  Expiry Day: Thursday")
+            logger.info("  SmartTrader - Indian Market Analysis System (NSE/BSE)")
+            logger.info("=" * 60)
+            logger.info(f"  Market: NSE/BSE")
+            logger.info(f"  Trading Hours: 9:15 AM - 3:30 PM IST")
+            logger.info(f"  Expiry Day: Thursday")
             if is_expiry_day():
-                print(f"  *** TODAY IS EXPIRY DAY (Thursday) ***")
+                logger.warning(f"  *** TODAY IS EXPIRY DAY (Thursday) ***")
             if is_budget_day():
-                print(f"  *** TODAY IS BUDGET DAY (Feb 1st) - High Volatility Expected ***")
+                logger.warning(f"  *** TODAY IS BUDGET DAY (Feb 1st) - High Volatility Expected ***")
         else:
-            print("  SmartTrader - AI Trading Analysis System (US Markets)")
-            print("=" * 60)
-        print()
+            logger.info("  SmartTrader - AI Trading Analysis System (US Markets)")
+            logger.info("=" * 60)
+        logger.info("")
 
     def normalize_ticker(self, ticker: str) -> str:
         """Normalize ticker based on market"""
@@ -89,7 +99,7 @@ class SmartTrader:
 
     def screen_opportunities(self):
         """Screen for top trading opportunities"""
-        print("\n[SCREEN] Finding top trading opportunities...")
+        logger.info("[SCREEN] Finding top trading opportunities...")
 
         if self.market == 'IN' and self.nse_fetcher:
             return self.screen_indian_opportunities()
@@ -97,30 +107,30 @@ class SmartTrader:
         results = self.screener.get_top_opportunities()
 
         if results:
-            print(f"\nTop {len(results)} opportunities found:")
-            print("-" * 80)
-            print(f"{'Ticker':<8} {'Score':<6} {'Price':<10} {'1M Chg%':<10} {'RSI':<8} {'Volume':<8}")
-            print("-" * 80)
+            logger.info(f"Top {len(results)} opportunities found:")
+            logger.info("-" * 80)
+            logger.info(f"{'Ticker':<8} {'Score':<6} {'Price':<10} {'1M Chg%':<10} {'RSI':<8} {'Volume':<8}")
+            logger.info("-" * 80)
 
             for r in results:
-                print(f"{r['ticker']:<8} {r['score']:<6} ${r['price']:<9} {r['price_change_1m']:>6}%   {r['rsi']:<8} {r['volume_surge']:<8.1f}x")
+                logger.info(f"{r['ticker']:<8} {r['score']:<6} ${r['price']:<9} {r['price_change_1m']:>6}%   {r['rsi']:<8} {r['volume_surge']:<8.1f}x")
 
             # Save results
             output_file = OUTPUT_DIR / "screened_opportunities.json"
             with open(output_file, 'w') as f:
                 json.dump(results, f, indent=2)
-            print(f"\nResults saved to: {output_file}")
+            logger.info(f"Results saved to: {output_file}")
 
             # Create visualization
             self.visualizer.plot_screener_results(results)
         else:
-            print("No opportunities found.")
+            logger.info("No opportunities found.")
 
         return results
 
     def screen_indian_opportunities(self):
         """Screen for Indian market opportunities"""
-        print("\n[SCREEN] Finding top Indian market opportunities...")
+        logger.info("[SCREEN] Finding top Indian market opportunities...")
 
         # Get popular Indian stocks
         indian_stocks = self.nse_fetcher.get_nifty_50_tickers()
@@ -136,29 +146,30 @@ class SmartTrader:
                         'confidence': analysis['confidence'],
                         'price': analysis.get('current_price', 0)
                     })
-            except:
+            except Exception as e:
+                logger.debug(f"Error analyzing {ticker}: {e}")
                 continue
 
         if results:
             results.sort(key=lambda x: x['confidence'], reverse=True)
-            print(f"\nTop {len(results)} Indian opportunities found:")
+            logger.info(f"Top {len(results)} Indian opportunities found:")
             for r in results[:10]:
-                print(f"  {r['ticker']:<15} {r['signal']:<6} (Conf: {r['confidence']:.1%}) @ {r['price']:.2f}")
+                logger.info(f"  {r['ticker']:<15} {r['signal']:<6} (Conf: {r['confidence']:.1%}) @ {r['price']:.2f}")
         else:
-            print("No opportunities found.")
+            logger.info("No opportunities found.")
 
         return results
 
-    def analyze_ticker(self, ticker: str, detailed: bool = True):
+    def analyze_ticker(self, ticker: str, detailed: bool = True, force: bool = False):
         """Full analysis of a single ticker"""
         # Normalize ticker
         ticker = self.normalize_ticker(ticker)
 
-        print(f"\n[ANALYZE] Analyzing {ticker}...")
+        logger.info(f"[ANALYZE] Analyzing {ticker}...")
 
         # Check memory first
-        if not self.memory.should_recompute(ticker):
-            print("  Using cached analysis (use --force to override)")
+        if not self.memory.should_recompute(ticker, force=force):
+            logger.info("  Using cached analysis (use --force to override)")
             past = self.memory.get_past_predictions(ticker, days=1)
             if past:
                 return past[-1]['prediction']
@@ -167,45 +178,45 @@ class SmartTrader:
         analysis = self.stock_strategy.analyze_ticker(ticker, detailed)
 
         if 'error' in analysis:
-            print(f"  Error: {analysis['error']}")
+            logger.error(f"  Error: {analysis['error']}")
             return analysis
 
         # Print results
-        print(f"\n{'=' * 60}")
-        print(f"  Analysis for {ticker}")
-        print(f"{'=' * 60}")
-        print(f"  Signal: {analysis['signal']} (Confidence: {analysis['confidence']:.1%})")
-        print(f"  Current Price: ${analysis.get('current_price', 'N/A')}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"  Analysis for {ticker}")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"  Signal: {analysis['signal']} (Confidence: {analysis['confidence']:.1%})")
+        logger.info(f"  Current Price: ${analysis.get('current_price', 'N/A')}")
 
         if analysis.get('price_target'):
-            print(f"  Price Target: ${analysis['price_target']}")
-            print(f"  Stop Loss: ${analysis['stop_loss']}")
+            logger.info(f"  Price Target: ${analysis['price_target']}")
+            logger.info(f"  Stop Loss: ${analysis['stop_loss']}")
 
-        print(f"\n  Sentiment: {analysis['factors'].get('sentiment', {}).get('aggregate_sentiment', 0):.2f}")
-        print(f"  RSI: {analysis['factors'].get('technical', {}).get('rsi', 'N/A')}")
-        print(f"  MACD Signal: {analysis['factors'].get('technical', {}).get('macd_signal', 'N/A')}")
-        print(f"  MA Signal: {analysis['factors'].get('technical', {}).get('ma_signal', 'N/A')}")
+        logger.info(f"\n  Sentiment: {analysis['factors'].get('sentiment', {}).get('aggregate_sentiment', 0):.2f}")
+        logger.info(f"  RSI: {analysis['factors'].get('technical', {}).get('rsi', 'N/A')}")
+        logger.info(f"  MACD Signal: {analysis['factors'].get('technical', {}).get('macd_signal', 'N/A')}")
+        logger.info(f"  MA Signal: {analysis['factors'].get('technical', {}).get('ma_signal', 'N/A')}")
 
         # Save analysis
         output_file = OUTPUT_DIR / f"{ticker}_analysis.json"
         with open(output_file, 'w') as f:
             json.dump(analysis, f, indent=2, default=str)
-        print(f"\n  Analysis saved to: {output_file}")
+        logger.info(f"\n  Analysis saved to: {output_file}")
 
         # Create lifecycle prediction if BUY signal
         if analysis.get('signal') == 'BUY' and 'current_price' in analysis:
-            print(f"\n  [LIFECYCLE] Creating full trade prediction...")
+            logger.info(f"\n  [LIFECYCLE] Creating full trade prediction...")
             try:
                 lifecycle_pred = self.lifecycle_manager.create_prediction(
                     ticker, 'BUY', analysis['current_price'], analysis
                 )
-                print(f"    Prediction ID: {lifecycle_pred['id']}")
-                print(f"    Entry: ${lifecycle_pred['entry']['price']:.2f}")
-                print(f"    Target: ${lifecycle_pred['exit_plan']['target_price']:.2f}")
-                print(f"    Stop Loss: ${lifecycle_pred['exit_plan']['stop_loss']:.2f}")
-                print(f"    Expected Exit: {lifecycle_pred['exit_plan']['target_date']}")
+                logger.info(f"    Prediction ID: {lifecycle_pred['id']}")
+                logger.info(f"    Entry: ${lifecycle_pred['entry']['price']:.2f}")
+                logger.info(f"    Target: ${lifecycle_pred['exit_plan']['target_price']:.2f}")
+                logger.info(f"    Stop Loss: ${lifecycle_pred['exit_plan']['stop_loss']:.2f}")
+                logger.info(f"    Expected Exit: {lifecycle_pred['exit_plan']['target_date']}")
             except Exception as e:
-                print(f"    Warning: Could not create lifecycle prediction: {e}")
+                logger.warning(f"    Warning: Could not create lifecycle prediction: {e}")
 
         # Create visualization
         self.visualizer.create_summary_dashboard(analysis)
@@ -216,7 +227,7 @@ class SmartTrader:
     def analyze_options(self, ticker: str):
         """Analyze options for a ticker"""
         ticker = self.normalize_ticker(ticker)
-        print(f"\n[OPTIONS] Analyzing options for {ticker}...")
+        logger.info(f"[OPTIONS] Analyzing options for {ticker}...")
 
         # Get stock signal first
         stock_analysis = self.analyze_ticker(ticker, detailed=False)
@@ -225,67 +236,67 @@ class SmartTrader:
         # Get options chain
         chain = self.options_analyzer.get_options_chain(ticker)
         if 'error' in chain:
-            print(f"  Error: {chain['error']}")
+            logger.error(f"  Error: {chain['error']}")
             return chain
 
-        print(f"\n  Options Expiration: {chain['expiration']}")
-        print(f"  Calls Available: {len(chain['calls'])}")
-        print(f"  Puts Available: {len(chain['puts'])}")
+        logger.info(f"\n  Options Expiration: {chain['expiration']}")
+        logger.info(f"  Calls Available: {len(chain['calls'])}")
+        logger.info(f"  Puts Available: {len(chain['puts'])}")
 
         # Check unusual activity
         unusual = self.options_analyzer.detect_unusual_options_activity(ticker)
         if unusual.get('unusual_activity'):
-            print(f"\n  UNUSUAL OPTIONS ACTIVITY DETECTED!")
-            print(f"  Activity Count: {unusual['activity_count']}")
+            logger.warning(f"\n  UNUSUAL OPTIONS ACTIVITY DETECTED!")
+            logger.warning(f"  Activity Count: {unusual['activity_count']}")
             for act in unusual['activities'][:5]:
-                print(f"    - {act['type']} @ ${act['strike']}: Volume {act['volume']} (Avg: {act['avg_volume']:.0f})")
+                logger.warning(f"    - {act['type']} @ ${act['strike']}: Volume {act['volume']} (Avg: {act['avg_volume']:.0f})")
 
         # Suggest strategies
         strategies = self.options_analyzer.suggest_options_strategy(ticker, direction)
         if 'error' not in strategies:
-            print(f"\n  Suggested Strategies for {direction} outlook:")
+            logger.info(f"\n  Suggested Strategies for {direction} outlook:")
             for s in strategies['suggested_strategies']:
-                print(f"    - {s['name']}: {s['description']}")
-                print(f"      Risk: {s['risk']} | Best if: {s['best_if']}")
+                logger.info(f"    - {s['name']}: {s['description']}")
+                logger.info(f"      Risk: {s['risk']} | Best if: {s['best_if']}")
 
         return {'chain': chain, 'unusual': unusual, 'strategies': strategies}
 
     def analyze_futures(self, symbol: str = None):
         """Analyze futures contracts"""
-        print(f"\n[FUTURES] Analyzing futures...")
+        logger.info(f"[FUTURES] Analyzing futures...")
 
         symbols = [symbol] if symbol else ['ES', 'NQ', 'CL', 'GC']
 
         results = {}
         for sym in symbols:
-            print(f"\n  Analyzing {sym}...")
+            logger.info(f"\n  Analyzing {sym}...")
             result = self.futures_analyzer.generate_futures_signal(sym)
             results[sym] = result
 
             if 'error' not in result:
-                print(f"    Signal: {result['signal']} (Confidence: {result['confidence']:.1%})")
+                logger.info(f"    Signal: {result['signal']} (Confidence: {result['confidence']:.1%})")
                 analysis = result.get('analysis', {})
-                print(f"    Trend: {analysis.get('trend', 'N/A')}")
-                print(f"    Price: ${analysis.get('current_price', 'N/A')}")
+                logger.info(f"    Trend: {analysis.get('trend', 'N/A')}")
+                logger.info(f"    Price: ${analysis.get('current_price', 'N/A')}")
 
         # Intermarket analysis
-        print(f"\n  Intermarket Relationships:")
+        logger.info(f"\n  Intermarket Relationships:")
         intermarket = self.futures_analyzer.analyze_intermarket_relationships()
         for key, value in intermarket.items():
-            print(f"    {key}: {value}")
+            logger.info(f"    {key}: {value}")
 
         # Spread opportunities
         spreads = self.futures_analyzer.get_futures_spread_opportunity()
         if spreads:
-            print(f"\n  Spread Opportunities:")
+            logger.info(f"\n  Spread Opportunities:")
             for s in spreads:
-                print(f"    - {s['spread']}: {s['signal']} ({s['reason']})")
+                logger.info(f"    - {s['spread']}: {s['signal']} ({s['reason']})")
 
         return results
 
     def analyze_indian_index(self, index: str = 'NIFTY50'):
         """Analyze Indian indices like Nifty, BankNifty"""
-        print(f"\n[INDEX] Analyzing {index}...")
+        logger.info(f"[INDEX] Analyzing {index}...")
 
         index_map = {
             'NIFTY50': '^NSEI',
@@ -294,7 +305,7 @@ class SmartTrader:
 
         symbol = index_map.get(index.upper())
         if not symbol:
-            print(f"Unknown index: {index}")
+            logger.error(f"Unknown index: {index}")
             return None
 
         try:
@@ -302,7 +313,7 @@ class SmartTrader:
             hist = ticker.history(period='6mo')
 
             if hist.empty:
-                print("No data available")
+                logger.warning("No data available")
                 return None
 
             current_price = hist['Close'].iloc[-1]
@@ -311,20 +322,20 @@ class SmartTrader:
             ma_50 = hist['Close'].rolling(50).mean().iloc[-1]
             ma_200 = hist['Close'].rolling(200).mean().iloc[-1] if len(hist) >= 200 else ma_50
 
-            print(f"\n  {index} Analysis:")
-            print(f"  Current Price: {current_price:.2f}")
-            print(f"  50-day MA: {ma_50:.2f}")
-            print(f"  200-day MA: {ma_200:.2f}")
+            logger.info(f"\n  {index} Analysis:")
+            logger.info(f"  Current Price: {current_price:.2f}")
+            logger.info(f"  50-day MA: {ma_50:.2f}")
+            logger.info(f"  200-day MA: {ma_200:.2f}")
 
             if current_price > ma_50 > ma_200:
                 signal = 'BULLISH'
-                print(f"  Signal: BULLISH (Strong Uptrend)")
+                logger.info(f"  Signal: BULLISH (Strong Uptrend)")
             elif current_price < ma_50 < ma_200:
                 signal = 'BEARISH'
-                print(f"  Signal: BEARISH (Strong Downtrend)")
+                logger.info(f"  Signal: BEARISH (Strong Downtrend)")
             else:
                 signal = 'NEUTRAL'
-                print(f"  Signal: NEUTRAL (Consolidation)")
+                logger.info(f"  Signal: NEUTRAL (Consolidation)")
 
             return {
                 'index': index,
@@ -335,15 +346,15 @@ class SmartTrader:
             }
 
         except Exception as e:
-            print(f"Error: {e}")
+            logger.error(f"Error: {e}")
             return None
 
     def run_backtest(self, ticker: str, strategy: str = 'ma_crossover', days: int = 252):
         """Run backtest on a strategy"""
         ticker = self.normalize_ticker(ticker)
-        print(f"\n[BACKTEST] Running backtest for {ticker}...")
+        logger.info(f"[BACKTEST] Running backtest for {ticker}...")
 
-        start_date = (datetime.now() - __import__('pandas').Timedelta(days=days)).strftime('%Y-%m-%d')
+        start_date = (datetime.now() - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
         end_date = datetime.now().strftime('%Y-%m-%d')
 
         if strategy == 'ma_crossover':
@@ -355,26 +366,26 @@ class SmartTrader:
         elif strategy == 'compare':
             result = self.backtester.compare_strategies(ticker, start_date, end_date)
         else:
-            print(f"Unknown strategy: {strategy}")
+            logger.error(f"Unknown strategy: {strategy}")
             return None
 
         if 'error' in result:
-            print(f"  Error: {result['error']}")
+            logger.error(f"  Error: {result['error']}")
             return result
 
-        print(f"\n  Strategy: {result.get('strategy', 'N/A')}")
-        print(f"  Return: {result.get('return_pct', 0):.2f}%")
-        print(f"  Final Value: ${result.get('final_value', 0):.2f}")
-        print(f"  Total Trades: {result.get('total_trades', 0)}")
+        logger.info(f"\n  Strategy: {result.get('strategy', 'N/A')}")
+        logger.info(f"  Return: {result.get('return_pct', 0):.2f}%")
+        logger.info(f"  Final Value: ${result.get('final_value', 0):.2f}")
+        logger.info(f"  Total Trades: {result.get('total_trades', 0)}")
 
         if 'max_drawdown_pct' in result:
-            print(f"  Max Drawdown: {result['max_drawdown_pct']:.2f}%")
+            logger.info(f"  Max Drawdown: {result['max_drawdown_pct']:.2f}%")
 
         # Save results
         output_file = OUTPUT_DIR / f"{ticker}_{strategy}_backtest.json"
         with open(output_file, 'w') as f:
             json.dump(result, f, indent=2, default=str)
-        print(f"\n  Results saved to: {output_file}")
+        logger.info(f"\n  Results saved to: {output_file}")
 
         # Visualize
         self.visualizer.plot_backtest_results({'strategies': {strategy: result}})
@@ -382,69 +393,67 @@ class SmartTrader:
         return result
 
     def watch_mode(self, refresh_minutes: int = 15):
-        """Live monitoring mode"""
-        print(f"\n[WATCH] Starting live watch mode (refresh: {refresh_minutes} min)...")
-        print("Press Ctrl+C to stop\n")
+        """Live monitoring mode using schedule library."""
+        logger.info(f"\n[WATCH] Starting live watch mode (refresh: {refresh_minutes} min)...")
+        logger.info("Press Ctrl+C to stop\n")
 
-        import time
+        def _watch_cycle():
+            opportunities = self.screener.get_top_opportunities(max_results=5)
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"  Watch Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"{'=' * 60}")
+            for opp in opportunities:
+                analysis = self.analyze_ticker(opp['ticker'], detailed=False)
+                if 'error' not in analysis:
+                    logger.info(f"  {opp['ticker']}: {analysis['signal']} @ ${analysis.get('current_price', 0):.2f} (Conf: {analysis['confidence']:.1%})")
+
+        schedule.every(refresh_minutes).minutes.do(_watch_cycle)
+
         try:
             while True:
-                # Get top opportunities
-                opportunities = self.screener.get_top_opportunities(max_results=5)
-
-                print(f"\n{'=' * 60}")
-                print(f"  Watch Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                print(f"{'=' * 60}")
-
-                for opp in opportunities:
-                    analysis = self.analyze_ticker(opp['ticker'], detailed=False)
-                    if 'error' not in analysis:
-                        print(f"  {opp['ticker']}: {analysis['signal']} @ ${analysis.get('current_price', 0):.2f} (Conf: {analysis['confidence']:.1%})")
-
-                print(f"\n  Next update in {refresh_minutes} minutes...")
-                time.sleep(refresh_minutes * 60)
-
+                schedule.run_pending()
+                time.sleep(1)
         except KeyboardInterrupt:
-            print("\n\nWatch mode stopped.")
+            logger.info("\n\nWatch mode stopped.")
 
     def show_memory(self, ticker: str = None):
         """Show prediction memory"""
-        print(f"\n[MEMORY] Prediction Memory")
+        logger.info(f"\n[MEMORY] Prediction Memory")
 
         if ticker:
             ticker = self.normalize_ticker(ticker)
             stats = self.memory.get_ticker_stats(ticker)
-            print(f"\n  Stats for {ticker}:")
-            print(f"    Total Predictions: {stats['total_predictions']}")
-            print(f"    Accuracy: {stats['prediction_accuracy']:.1%}")
-            print(f"    Signal Distribution: {stats['signal_distribution']}")
+            logger.info(f"\n  Stats for {ticker}:")
+            logger.info(f"    Total Predictions: {stats['total_predictions']}")
+            logger.info(f"    Accuracy: {stats['prediction_accuracy']:.1%}")
+            logger.info(f"    Signal Distribution: {stats['signal_distribution']}")
         else:
             accuracy = self.memory.get_prediction_accuracy()
-            print(f"\n  Overall Accuracy: {accuracy.get('accuracy', 0):.1%}")
-            print(f"  Total Predictions: {accuracy.get('total', 0)}")
-            print(f"  Correct: {accuracy.get('correct', 0)}")
+            logger.info(f"\n  Overall Accuracy: {accuracy.get('accuracy', 0):.1%}")
+            logger.info(f"  Total Predictions: {accuracy.get('total', 0)}")
+            logger.info(f"  Correct: {accuracy.get('correct', 0)}")
 
     def show_lifecycle(self, ticker: str = None):
         """Show active lifecycle predictions"""
-        print(f"\n[LIFECYCLE] Active Predictions")
+        logger.info(f"\n[LIFECYCLE] Active Predictions")
 
         if ticker:
             ticker = self.normalize_ticker(ticker)
             active = self.lifecycle_manager.get_active_for_ticker(ticker)
-            print(f"\n  Active predictions for {ticker}:")
+            logger.info(f"\n  Active predictions for {ticker}:")
         else:
             active = self.lifecycle_manager.get_active_predictions()
-            print(f"\n  All active predictions ({len(active)} total):")
+            logger.info(f"\n  All active predictions ({len(active)} total):")
 
         if not active:
-            print("  No active predictions found.")
+            logger.info("  No active predictions found.")
             return
 
         for pred in active:
-            print(f"\n{'=' * 50}")
-            print(f"  ID: {pred['id']} | Ticker: {pred['ticker']}")
-            print(f"  Entry: ${pred['entry']['price']:.2f} on {pred['entry']['date']}")
-            print(f"  Target: ${pred['exit_plan']['target_price']:.2f} | Stop: ${pred['exit_plan']['stop_loss']:.2f}")
+            logger.info(f"\n{'=' * 50}")
+            logger.info(f"  ID: {pred['id']} | Ticker: {pred['ticker']}")
+            logger.info(f"  Entry: ${pred['entry']['price']:.2f} on {pred['entry']['date']}")
+            logger.info(f"  Target: ${pred['exit_plan']['target_price']:.2f} | Stop: ${pred['exit_plan']['stop_loss']:.2f}")
 
             # Get current price and P&L
             try:
@@ -454,28 +463,44 @@ class SmartTrader:
                     current = hist['Close'].iloc[-1]
                     pnl_pct = ((current - pred['entry']['price']) / pred['entry']['price']) * 100
                     pnl_color = '+' if pnl_pct >= 0 else ''
-                    print(f"  Current: ${current:.2f} | P&L: {pnl_color}{pnl_pct:.2f}%")
-            except:
-                print(f"  Current: Unable to fetch price")
+                    logger.info(f"  Current: ${current:.2f} | P&L: {pnl_color}{pnl_pct:.2f}%")
+            except Exception as e:
+                logger.debug(f"Unable to fetch price for {pred['ticker']}: {e}")
 
     def check_sell(self, ticker: str):
         """Check if we should sell based on active predictions"""
         ticker = self.normalize_ticker(ticker)
-        print(f"\n[CHECK SELL] Checking {ticker}...")
+        logger.info(f"\n[CHECK SELL] Checking {ticker}...")
 
         result = self.lifecycle_manager.should_sell_now(ticker)
 
-        print(f"\n  Ticker: {ticker}")
-        print(f"  Should Sell: {result['sell']}")
-        print(f"  Reason: {result['reason']}")
-        print(f"  Confidence: {result['confidence']:.1%}")
+        logger.info(f"\n  Ticker: {ticker}")
+        logger.info(f"  Should Sell: {result['sell']}")
+        logger.info(f"  Reason: {result['reason']}")
+        logger.info(f"  Confidence: {result['confidence']:.1%}")
 
         if 'pnl_pct' in result:
             pnl = result['pnl_pct']
             pnl_color = '+' if pnl >= 0 else ''
-            print(f"  P&L: {pnl_color}{pnl:.2f}%")
+            logger.info(f"  P&L: {pnl_color}{pnl:.2f}%")
 
         return result
+
+
+def kill_switch():
+    """Emergency stop for all trading activity"""
+    from utils.notifier import Notifier
+    from utils.risk_manager import RiskManager
+
+    notifier = Notifier()
+    notifier.notify_killswitch()
+
+    # Save kill-switch state
+    from pathlib import Path
+    kill_file = Path('kill_switch.active')
+    kill_file.touch()
+    print("KILL-SWITCH ACTIVATED - All trading disabled")
+    return {'status': 'disabled'}
 
 
 def main():
@@ -485,8 +510,10 @@ def main():
                         help='Market: US (default) or IN (Indian/NSE)')
 
     parser.add_argument('--mode', type=str, default='screen',
-                        choices=['screen', 'analyze', 'options', 'futures', 'backtest', 'watch', 'memory', 'index', 'lifecycle', 'check-sell'],
+                        choices=['screen', 'analyze', 'options', 'futures', 'backtest', 'watch', 'memory', 'index', 'lifecycle', 'check-sell', 'kill-switch'],
                         help='Operation mode')
+
+    parser.add_argument('--kill-switch', action='store_true', help='Emergency stop: cancel all orders and disable trading')
 
     parser.add_argument('--ticker', type=str, help='Ticker symbol to analyze')
     parser.add_argument('--strategy', type=str, default='ma_crossover',
@@ -499,6 +526,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Check for kill-switch first (emergency stop)
+    if args.kill_switch:
+        kill_switch()
+        return
+
     # Initialize system
     trader = SmartTrader(market=args.market)
 
@@ -508,13 +540,13 @@ def main():
 
     elif args.mode == 'analyze':
         if not args.ticker:
-            print("Error: --ticker required for analyze mode")
+            logger.error("Error: --ticker required for analyze mode")
             return
-        trader.analyze_ticker(args.ticker)
+        trader.analyze_ticker(args.ticker, force=args.force)
 
     elif args.mode == 'options':
         if not args.ticker:
-            print("Error: --ticker required for options mode")
+            logger.error("Error: --ticker required for options mode")
             return
         trader.analyze_options(args.ticker)
 
@@ -523,7 +555,7 @@ def main():
 
     elif args.mode == 'backtest':
         if not args.ticker:
-            print("Error: --ticker required for backtest mode")
+            logger.error("Error: --ticker required for backtest mode")
             return
         trader.run_backtest(args.ticker, args.strategy, args.days)
 
@@ -537,18 +569,17 @@ def main():
         if args.market == 'IN':
             trader.analyze_indian_index(args.index)
         else:
-            print("Index analysis only available for Indian market (use --market IN)")
+            logger.error("Index analysis only available for Indian market (use --market IN)")
 
     elif args.mode == 'lifecycle':
         trader.show_lifecycle(args.ticker)
 
     elif args.mode == 'check-sell':
         if not args.ticker:
-            print("Error: --ticker required for check-sell mode")
+            logger.error("Error: --ticker required for check-sell mode")
             return
         trader.check_sell(args.ticker)
 
 
 if __name__ == "__main__":
-    import pandas as pd  # Needed for backtest
     main()

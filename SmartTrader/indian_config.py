@@ -296,6 +296,46 @@ NSE_HOLIDAYS_2025 = [
     "2025-12-25",  # Christmas
 ]
 
+NSE_HOLIDAYS_2026 = [
+    "2026-01-26",  # Republic Day
+    "2026-03-04",  # Mahashivratri (tentative)
+    "2026-03-20",  # Holi (tentative)
+    "2026-04-03",  # Good Friday (tentative)
+    "2026-04-15",  # Id-Ul-Fitr (tentative)
+    "2026-05-01",  # Maharashtra Day
+    "2026-08-15",  # Independence Day
+    "2026-10-02",  # Gandhi Jayanti
+    "2026-11-08",  # Diwali (tentative)
+    "2026-12-25",  # Christmas
+]
+
+NSE_HOLIDAYS_2027 = [
+    "2027-01-26",  # Republic Day
+    "2027-02-22",  # Mahashivratri (tentative)
+    "2027-03-12",  # Holi (tentative)
+    "2027-03-26",  # Good Friday (tentative)
+    "2027-04-05",  # Id-Ul-Fitr (tentative)
+    "2027-05-01",  # Maharashtra Day
+    "2027-08-15",  # Independence Day
+    "2027-10-02",  # Gandhi Jayanti
+    "2027-10-28",  # Diwali (tentative)
+    "2027-12-25",  # Christmas
+]
+
+def get_nse_holidays(year: int = None) -> list:
+    """Get NSE holidays for a given year (dynamic)"""
+    if year is None:
+        from datetime import datetime
+        year = datetime.now().year
+
+    holiday_map = {
+        2024: NSE_HOLIDAYS_2024,
+        2025: NSE_HOLIDAYS_2025,
+        2026: NSE_HOLIDAYS_2026,
+        2027: NSE_HOLIDAYS_2027,
+    }
+    return holiday_map.get(year, [])
+
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================

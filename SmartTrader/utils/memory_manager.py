@@ -9,6 +9,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import numpy as np
+import shutil
+import yfinance as yf
 
 from config import MEMORY_DIR, MEMORY_FILE, OUTCOMES_FILE, MAX_MEMORY_ENTRIES
 
@@ -46,11 +48,38 @@ class PredictionMemory:
         return {'outcomes': [], 'metadata': {'last_update': ''}}
 
     def save(self):
-        """Persist memory to disk"""
-        with open(self.memory_file, 'w') as f:
-            json.dump(self.memory, f, indent=2, default=str)
-        with open(self.outcomes_file, 'w') as f:
-            json.dump(self.outcomes, f, indent=2, default=str)
+        """Atomically save data to disk"""
+        # Write memory to temp file first
+        temp_file = self.memory_file.with_suffix('.tmp')
+        try:
+            with open(temp_file, 'w') as f:
+                json.dump(self.memory, f, indent=2, default=str)
+            # Atomic replace
+            shutil.move(str(temp_file), str(self.memory_file))
+
+            # Remove old backup if exists
+            if self.memory_file.with_suffix('.bak').exists():
+                self.memory_file.with_suffix('.bak').unlink()
+        except Exception as e:
+            logger.error(f"Failed to save memory: {e}")
+            if temp_file.exists():
+                temp_file.unlink()
+
+        # Write outcomes to temp file first
+        temp_file = self.outcomes_file.with_suffix('.tmp')
+        try:
+            with open(temp_file, 'w') as f:
+                json.dump(self.outcomes, f, indent=2, default=str)
+            # Atomic replace
+            shutil.move(str(temp_file), str(self.outcomes_file))
+
+            # Remove old backup if exists
+            if self.outcomes_file.with_suffix('.bak').exists():
+                self.outcomes_file.with_suffix('.bak').unlink()
+        except Exception as e:
+            logger.error(f"Failed to save outcomes: {e}")
+            if temp_file.exists():
+                temp_file.unlink()
 
     def add_prediction(self, ticker: str, prediction: Dict):
         """Store a new prediction"""
@@ -176,20 +205,55 @@ class PredictionMemory:
             'last_prediction': past_preds[-1]['timestamp'] if past_preds else None
         }
 
-    def should_recompute(self, ticker: str, min_hours: int = 24) -> bool:
+    def should_recompute(self, ticker: str, min_hours: int = 24, force: bool = False) -> bool:
         """
         Check if we should recompute analysis for a ticker
         Returns False if we have recent analysis (saves compute)
+        If force is True, always return True (recompute)
         """
-        past_preds = self.get_past_predictions(ticker, days=1)
+        if force:
+            return True
+        # Calculate cutoff based on min_hours, not fixed 1 day
+        cutoff = datetime.now() - timedelta(hours=min_hours)
 
-        if not past_preds:
+        recent_preds = [
+            p for p in self.memory['predictions']
+            if p['ticker'] == ticker and
+            datetime.fromisoformat(p['timestamp']) > cutoff
+        ]
+
+        if not recent_preds:
             return True
 
-        last_pred_time = datetime.fromisoformat(past_preds[-1]['timestamp'])
+        # Get most recent prediction
+        last_pred_time = datetime.fromisoformat(
+            max(recent_preds, key=lambda x: x['timestamp'])['timestamp']
+        )
         hours_since = (datetime.now() - last_pred_time).total_seconds() / 3600
 
         return hours_since >= min_hours
+
+    def auto_verify_outcomes(self, min_days_old: int = 30):
+        """Check past predictions and auto-record outcomes."""
+        cutoff = datetime.now() - timedelta(days=min_days_old)
+        unverified = [
+            p for p in self.memory['predictions']
+            if not p.get('outcome_recorded')
+            and datetime.fromisoformat(p['timestamp']) < cutoff
+        ]
+        for pred in unverified:
+            try:
+                ticker = pred['ticker']
+                hist = yf.Ticker(ticker).history(
+                    start=pred['timestamp'][:10],
+                    period='1mo'
+                )
+                if hist.empty or len(hist) < 5:
+                    continue
+                return_pct = (hist['Close'].iloc[-1] / hist['Close'].iloc[0] - 1) * 100
+                self.record_outcome(pred['id'], {'return_pct': return_pct})
+            except Exception:
+                continue
 
 
 class MarketContextMemory:
@@ -218,8 +282,21 @@ class MarketContextMemory:
         }
 
     def save(self):
-        with open(self.context_file, 'w') as f:
-            json.dump(self.context, f, indent=2, default=str)
+        """Atomically save market context to disk"""
+        temp_file = self.context_file.with_suffix('.tmp')
+        try:
+            with open(temp_file, 'w') as f:
+                json.dump(self.context, f, indent=2, default=str)
+            # Atomic replace
+            shutil.move(str(temp_file), str(self.context_file))
+
+            # Remove old backup if exists
+            if self.context_file.with_suffix('.bak').exists():
+                self.context_file.with_suffix('.bak').unlink()
+        except Exception as e:
+            logger.error(f"Failed to save market context: {e}")
+            if temp_file.exists():
+                temp_file.unlink()
 
     def update_market_context(self, new_context: Dict):
         """Update market context"""

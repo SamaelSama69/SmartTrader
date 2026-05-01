@@ -9,7 +9,7 @@ import numpy as np
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import json
-from config import *
+from config import OPTIONS_MIN_VOLUME, OPTIONS_MIN_OPEN_INTEREST
 
 
 class OptionsAnalyzer:
@@ -99,27 +99,33 @@ class OptionsAnalyzer:
 
             unusual = []
 
-            # Check for volume spikes in calls
+            # Check for volume spikes in calls using volume-to-OI ratio
             for _, row in calls.iterrows():
-                avg_volume = row.get('openInterest', 0) / 20  # Rough average
-                if row['volume'] > avg_volume * UNUSUAL_OPTIONS_VOLUME_MULTIPLIER:
+                oi = row.get('openInterest', 0) or 1  # Avoid division by zero
+                vol = row.get('volume', 0) or 0
+                volume_to_oi_ratio = vol / oi
+                if volume_to_oi_ratio > 0.20 and vol > 500:
                     unusual.append({
                         'type': 'CALL',
                         'strike': row['strike'],
                         'volume': row['volume'],
-                        'avg_volume': round(avg_volume, 0),
+                        'open_interest': row.get('openInterest', 0),
+                        'volume_to_oi_ratio': round(volume_to_oi_ratio, 2),
                         'signal': 'BULLISH' if current_price and row['strike'] > current_price else 'BEARISH'
                     })
 
-            # Check for volume spikes in puts
+            # Check for volume spikes in puts using volume-to-OI ratio
             for _, row in puts.iterrows():
-                avg_volume = row.get('openInterest', 0) / 20
-                if row['volume'] > avg_volume * UNUSUAL_OPTIONS_VOLUME_MULTIPLIER:
+                oi = row.get('openInterest', 0) or 1
+                vol = row.get('volume', 0) or 0
+                volume_to_oi_ratio = vol / oi
+                if volume_to_oi_ratio > 0.20 and vol > 500:
                     unusual.append({
                         'type': 'PUT',
                         'strike': row['strike'],
                         'volume': row['volume'],
-                        'avg_volume': round(avg_volume, 0),
+                        'open_interest': row.get('openInterest', 0),
+                        'volume_to_oi_ratio': round(volume_to_oi_ratio, 2),
                         'signal': 'BEARISH'
                     })
 
@@ -221,13 +227,25 @@ class OptionsAnalyzer:
         except Exception as e:
             return {'error': str(e)}
 
-    def calculate_options_profit_loss(self, strategy: Dict, exit_price: float) -> Dict:
-        """Calculate potential profit/loss for an options strategy"""
-        # Simplified P&L calculation
-        # In practice, would need full options pricing model
+    def calculate_options_profit_loss(self, option_data: Dict, exit_price: float) -> Dict:
+        """Calculate profit/loss for an options position using real math"""
+        strike = option_data.get('strike', 0)
+        premium = option_data.get('last_price', 0)
+        opt_type = option_data.get('type', 'call').lower()  # Normalize to lowercase
+
+        if opt_type == 'call':
+            intrinsic = max(exit_price - strike, 0)
+        else:
+            intrinsic = max(strike - exit_price, 0)
+
+        pnl = intrinsic - premium
+        pnl_pct = (pnl / premium * 100) if premium > 0 else 0
+        breakeven = (strike + premium) if opt_type == 'call' else (strike - premium)
+
         return {
-            'strategy': strategy.get('name'),
-            'max_profit': 'Unlimited' if 'Call' in strategy.get('name', '') else 'Limited',
-            'max_loss': 'Limited to premium',
-            'breakeven': 'Strike + Premium' if 'Call' in strategy.get('name', '') else 'Strike - Premium'
+            'pnl': round(pnl, 2),
+            'pnl_pct': round(pnl_pct, 1),
+            'breakeven': round(breakeven, 2),
+            'max_loss': round(-premium, 2),
+            'is_profitable': pnl > 0
         }

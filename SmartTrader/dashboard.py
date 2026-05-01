@@ -16,7 +16,7 @@ from pathlib import Path
 # Add project to path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import *
+# config import removed (not directly used)
 from utils.data_fetcher import MarketDataFetcher, NewsFetcher
 from utils.sentiment_analyzer import SentimentAnalyzer
 from utils.screener import SmartScreener
@@ -25,6 +25,14 @@ from utils.lifecycle_manager import LifecyclePrediction
 from strategies.stocks import StockStrategy
 from strategies.options import OptionsAnalyzer
 from utils.expert_tracker import ExpertTracker
+
+# Authentication setup
+try:
+    import streamlit_authenticator as stauth
+    AUTH_ENABLED = True
+except ImportError:
+    AUTH_ENABLED = False
+    print("streamlit-authenticator not installed. Dashboard will run without authentication.")
 
 # Page config
 st.set_page_config(
@@ -578,6 +586,27 @@ def render_active_predictions():
 
 def main():
     """Main dashboard function"""
+
+    # Authentication check
+    if AUTH_ENABLED:
+        names = ["User"]
+        usernames = ["user"]
+        passwords = ["password"]  # In production, use hashed passwords from secrets.toml
+
+        authenticator = stauth.Authenticate(names, usernames, passwords, "smarttrader_dashboard", "abcdef", cookie_expiry_days=30)
+
+        name, authentication_status, username = authenticator.login("Login", "main")
+
+        if authentication_status == False:
+            st.error("Username/password is incorrect")
+            return
+        elif authentication_status is None:
+            st.warning("Please enter your username and password")
+            return
+
+        st.success(f"Welcome {name}!")
+        authenticator.logout("Logout", "sidebar")
+
     render_header()
     page, ticker, refresh = render_sidebar()
 

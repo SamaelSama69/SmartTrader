@@ -6,11 +6,10 @@ Fetches Nifty 50/500 tickers, F&O listings, and corporate actions
 import yfinance as yf
 import pandas as pd
 import requests
+import pytz
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, date
 import json
-from config import *
-
 # Nifty 50 tickers (as of 2024, with .NS suffix for Yahoo Finance)
 NIFTY_50_TICKERS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
@@ -265,7 +264,8 @@ class NSEDataFetcher:
         Check if NSE market is currently open
         Trading hours: 9:15 AM - 3:30 PM IST (Mon-Fri)
         """
-        now = datetime.now()
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
 
         # Check if weekend
         if now.weekday() >= 5:  # Saturday = 5, Sunday = 6
@@ -273,7 +273,8 @@ class NSEDataFetcher:
 
         # Check if holiday
         holidays = self.get_market_holidays(now.year)
-        if now.date() in holidays:
+        holiday_dates = [datetime.strptime(h, '%Y-%m-%d').date() for h in holidays]
+        if now.date() in holiday_dates:
             return False
 
         # Check trading hours (9:15 AM to 3:30 PM IST)

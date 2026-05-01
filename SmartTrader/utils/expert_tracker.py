@@ -3,15 +3,19 @@ Expert Tracker - Tracks ratings and predictions from experts and publications
 Weighs their opinions based on historical accuracy
 """
 
+import yfinance as yf
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import json
 import time
+import logging
 
-from config import *
+from config import MEMORY_DIR, FINNHUB_API_KEY
 from utils.data_fetcher import MarketDataFetcher
+
+logger = logging.getLogger(__name__)
 
 
 class ExpertTracker:
@@ -120,7 +124,7 @@ class ExpertTracker:
                     }
 
         except Exception as e:
-            print(f"Finnhub analyst ratings error: {e}")
+            logger.error(f"Finnhub analyst ratings error: {e}")
 
         return {'ratings': [], 'consensus': 'HOLD'}
 
@@ -143,7 +147,7 @@ class ExpertTracker:
             }
 
         except Exception as e:
-            print(f"Analyst price targets error: {e}")
+            logger.error(f"Analyst price targets error: {e}")
             return {}
 
     def get_news_expert_mentions(self, ticker: str, days: int = 30) -> Dict:
@@ -212,7 +216,7 @@ class ExpertTracker:
             }
 
         except Exception as e:
-            print(f"Expert mentions error: {e}")
+            logger.error(f"Expert mentions error: {e}")
             return {'expert_mentions': []}
 
     def _extract_sentiment(self, text: str, ticker: str) -> float:
@@ -226,7 +230,7 @@ class ExpertTracker:
         Get weighted expert consensus
         WEIGHTS opinions based on historical accuracy
         """
-        print(f"  Fetching expert opinions for {ticker}...")
+        logger.info(f"Fetching expert opinions for {ticker}...")
 
         consensus_data = {
             'ticker': ticker,
@@ -329,15 +333,19 @@ class ExpertTracker:
         unverified = [p for p in self.experts_data['predictions']
                       if not p['verified'] and datetime.fromisoformat(p['date']) < cutoff]
 
-        print(f"Verifying {len(unverified)} expert predictions...")
+        logger.info(f"Verifying {len(unverified)} expert predictions...")
 
         for pred in unverified:
             try:
                 ticker = pred['ticker']
                 pred_date = datetime.fromisoformat(pred['date'])
 
-                # Get stock performance since prediction
-                hist = yf.Ticker(ticker).history(start=pred_date.strftime('%Y-%m-%d'), period='1mo')
+                # Get stock performance since prediction (use start/end instead of deprecated start+period)
+                end_date = datetime.now().strftime('%Y-%m-%d')
+                hist = yf.Ticker(ticker).history(
+                    start=pred_date.strftime('%Y-%m-%d'),
+                    end=end_date
+                )
 
                 if hist.empty or len(hist) < 5:
                     continue
@@ -372,11 +380,17 @@ class ExpertTracker:
                 self.experts_data['experts'][expert]['total'] += 1
 
             except Exception as e:
-                print(f"Error verifying prediction: {e}")
+                logger.error(f"Error verifying prediction: {e}")
                 continue
 
+        # Update tracked experts' accuracy
+        for expert_name in set(p['expert'] for p in self.experts_data['predictions']):
+            accuracy = self._get_expert_accuracy(expert_name)
+            if expert_name in self.tracked_experts:
+                self.tracked_experts[expert_name]['accuracy'] = accuracy
+
         self.save()
-        print("Expert prediction verification complete.")
+        logger.info("Expert prediction verification complete.")
 
     def get_expert_leaderboard(self) -> List[Dict]:
         """Get leaderboard of most accurate experts"""

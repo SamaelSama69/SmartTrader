@@ -1,6 +1,7 @@
 """
 Sentiment Analyzer - Uses free pre-computed sources + local analysis
 Offloads computation to free APIs when possible
+Includes caching for performance
 """
 
 import requests
@@ -10,30 +11,52 @@ from textblob import TextBlob
 from typing import Dict, List, Optional
 from datetime import datetime
 import time
+import hashlib
+import json
+import logging
+import numpy as np
+from numpy.linalg import norm
 
-from config import *
+from config import FINNHUB_API_KEY, NEWS_API_KEY, ALPHA_VANTAGE_KEY
+from utils.cache import sentiment_cache, indicators_cache, cached, rate_limited
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 
 class SentimentAnalyzer:
     """
     Multi-source sentiment analysis
     Uses pre-computed sentiment from APIs when available (saves compute)
+    Includes caching for performance
     """
 
     def __init__(self):
         self.vader = SentimentIntensityAnalyzer()
         self.finnhub_key = FINNHUB_API_KEY
         self.news_api_key = NEWS_API_KEY
+        self._last_api_call = 0
+        self._min_api_interval = 1.0  # 1 second between API calls
 
+    def _rate_limit(self):
+        """Apply rate limiting between API calls"""
+        now = time.time()
+        elapsed = now - self._last_api_call
+        if elapsed < self._min_api_interval:
+            time.sleep(self._min_api_interval - elapsed)
+        self._last_api_call = time.time()
+
+    @cached(sentiment_cache, ttl=3600)  # Cache for 1 hour
     def get_finnhub_sentiment(self, ticker: str) -> Dict:
         """
         Get pre-computed sentiment from Finnhub (free, already computed server-side)
-        This offloads compute to their servers
+        This offloads compute to their servers (cached)
         """
         if not self.finnhub_key:
             return {'sentiment_score': 0.0, 'news_score': 0.0, 'social_score': 0.0}
 
         try:
+            self._rate_limit()
             # Finnhub provides pre-computed sentiment
             url = f"https://finnhub.io/api/v1/stock/social-sentiment"
             params = {'symbol': ticker, 'token': self.finnhub_key}
@@ -60,19 +83,21 @@ class SentimentAnalyzer:
                     'source': 'finnhub_precomputed'
                 }
         except Exception as e:
-            print(f"Finnhub sentiment error: {e}")
+            logger.error(f"Finnhub sentiment error: {e}")
 
         return {'sentiment_score': 0.0, 'reddit_sentiment': 0.0, 'twitter_sentiment': 0.0}
 
+    @cached(sentiment_cache, ttl=1800)  # Cache for 30 minutes
     def get_newsapi_sentiment(self, ticker: str, days: int = 7) -> Dict:
         """
-        Get sentiment from News API articles
+        Get sentiment from News API articles (cached)
         Uses VADER locally but on a small subset (API limits to 100/day)
         """
         if not self.news_api_key:
             return {'sentiment': 0.0, 'article_count': 0}
 
         try:
+            self._rate_limit()
             from_date = (datetime.now() - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
             url = "https://newsapi.org/v2/everything"
             params = {
@@ -105,12 +130,13 @@ class SentimentAnalyzer:
                     'source': 'newsapi_vader'
                 }
         except Exception as e:
-            print(f"NewsAPI sentiment error: {e}")
+            logger.error(f"NewsAPI sentiment error: {e}")
 
         return {'sentiment': 0.0, 'article_count': 0}
 
+    @cached(sentiment_cache, ttl=3600)  # Cache text sentiment for 1 hour
     def compute_text_sentiment(self, text: str) -> Dict:
-        """Lightweight local sentiment (VADER + TextBlob)"""
+        """Lightweight local sentiment (VADER + TextBlob) - cached"""
         if not text or not text.strip():
             return {'compound': 0.0, 'polarity': 0.0, 'subjectivity': 0.0}
 
@@ -130,6 +156,7 @@ class SentimentAnalyzer:
         """
         Aggregate sentiment from multiple pre-computed sources
         Minimizes local compute by using API-provided sentiment
+        Uses cached individual source results
         """
         results = {
             'ticker': ticker,
@@ -137,11 +164,11 @@ class SentimentAnalyzer:
             'sources': {}
         }
 
-        # 1. Finnhub pre-computed sentiment (server-side compute)
+        # 1. Finnhub pre-computed sentiment (server-side compute) - cached
         finnhub_sent = self.get_finnhub_sentiment(ticker)
         results['sources']['finnhub'] = finnhub_sent
 
-        # 2. NewsAPI with local VADER (lightweight)
+        # 2. NewsAPI with local VADER (lightweight) - cached
         news_sent = self.get_newsapi_sentiment(ticker)
         results['sources']['newsapi'] = news_sent
 
@@ -157,7 +184,10 @@ class SentimentAnalyzer:
             weighted_sum += news_sent['sentiment'] * 1.5
             total_weight += 1.5
 
-        results['aggregate_sentiment'] = weighted_sum / total_weight if total_weight > 0 else 0.0
+        if total_weight > 0:
+            results['aggregate_sentiment'] = weighted_sum / total_weight
+        else:
+            results['aggregate_sentiment'] = 0.0
         results['sentiment_label'] = self._label_sentiment(results['aggregate_sentiment'])
 
         return results
@@ -176,21 +206,34 @@ class TechnicalSentimentAnalyzer:
     """
     Uses free APIs that provide pre-computed technical indicators
     Reduces local compute significantly
+    Includes caching for performance
     """
 
     def __init__(self):
         self.alpha_vantage_key = ALPHA_VANTAGE_KEY
         self.finnhub_key = FINNHUB_API_KEY
+        self._last_api_call = 0
+        self._min_api_interval = 1.0  # 1 second between API calls
 
+    def _rate_limit(self):
+        """Apply rate limiting between API calls"""
+        now = time.time()
+        elapsed = now - self._last_api_call
+        if elapsed < self._min_api_interval:
+            time.sleep(self._min_api_interval - elapsed)
+        self._last_api_call = time.time()
+
+    @cached(indicators_cache, ttl=1800)  # Cache for 30 minutes
     def get_alpha_vantage_indicators(self, ticker: str) -> Dict:
         """
         Get pre-computed technical indicators from Alpha Vantage (free tier)
-        They compute server-side, we just fetch results
+        They compute server-side, we just fetch results (cached)
         """
         if not self.alpha_vantage_key:
             return {}
 
         try:
+            self._rate_limit()
             # RSI (pre-computed by Alpha Vantage)
             url = "https://www.alphavantage.co/query"
             params = {
@@ -212,19 +255,21 @@ class TechnicalSentimentAnalyzer:
                     return {'rsi': rsi_value, 'source': 'alpha_vantage'}
 
         except Exception as e:
-            print(f"Alpha Vantage error: {e}")
+            logger.error(f"Alpha Vantage error: {e}")
 
         return {}
 
+    @cached(indicators_cache, ttl=1800)  # Cache for 30 minutes
     def get_finnhub_technical_indicators(self, ticker: str) -> Dict:
         """
-        Get pre-computed technicals from Finnhub
+        Get pre-computed technical indicators from Finnhub (cached)
         They provide RSI, MACD, SMA, etc. pre-computed
         """
         if not self.finnhub_key:
             return {}
 
         try:
+            self._rate_limit()
             # Finnhub supports basic technical indicators
             # For more advanced, we'd need paid tier
             url = f"https://finnhub.io/api/v1/indicator"
@@ -247,16 +292,18 @@ class TechnicalSentimentAnalyzer:
                     }
 
         except Exception as e:
-            print(f"Finnhub technical error: {e}")
+            logger.error(f"Finnhub technical error: {e}")
 
         return {}
 
+    @cached(sentiment_cache, ttl=3600)  # Cache for 1 hour
     def get_tradingview_ideas_sentiment(self, ticker: str) -> Dict:
         """
-        Scrape TradingView ideas for sentiment
+        Scrape TradingView ideas for sentiment (cached)
         TradingView computes popularity/ideas server-side
         """
         try:
+            self._rate_limit()
             # TradingView public ideas (no API key needed)
             url = f"https://www.tradingview.com/symbols/{ticker}/ideas/"
             headers = {'User-Agent': 'Mozilla/5.0'}
@@ -271,6 +318,59 @@ class TechnicalSentimentAnalyzer:
                 }
 
         except Exception as e:
-            print(f"TradingView scrape error: {e}")
+            logger.error(f"TradingView scrape error: {e}")
 
         return {'has_ideas': False}
+
+
+class SemanticSentimentAnalyzer:
+    """
+    Uses sentence-transformers (MiniLM) for richer sentiment analysis.
+    Computes semantic similarity between news headlines and bullish/bearish templates.
+    """
+
+    def __init__(self):
+        self.model_name = "all-MiniLM-L6-v2"  # From config
+        self.model = None
+        self._load_model()
+
+    def _load_model(self):
+        try:
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer(self.model_name)
+        except Exception as e:
+            logger.error(f"Could not load MiniLM model: {e}")
+
+    def analyze(self, text: str, ticker: str = "") -> Dict:
+        if not self.model:
+            return {'error': 'Model not loaded'}
+
+        # Bullish/bearish reference sentences
+        bullish = [
+            f"{ticker} stock is rising strongly",
+            f"{ticker} reports excellent earnings",
+            f"Analysts upgrade {ticker} with buy rating",
+        ]
+        bearish = [
+            f"{ticker} stock is falling sharply",
+            f"{ticker} misses earnings expectations",
+            f"Analysts downgrade {ticker} to sell",
+        ]
+
+        # Compute embeddings
+        text_embedding = self.model.encode(text)
+        bull_embeddings = self.model.encode(bullish)
+        bear_embeddings = self.model.encode(bearish)
+
+        # Compute similarity (cosine)
+        bull_sim = max([np.dot(text_embedding, be) / (norm(text_embedding) * norm(be)) for be in bull_embeddings])
+        bear_sim = max([np.dot(text_embedding, be) / (norm(text_embedding) * norm(be)) for be in bear_embeddings])
+
+        score = (bull_sim - bear_sim) / 2  # Range [-1, 1]
+
+        return {
+            'semantic_score': float(score),
+            'bullish_similarity': float(bull_sim),
+            'bearish_similarity': float(bear_sim),
+            'label': 'Positive' if score > 0.1 else 'Negative' if score < -0.1 else 'Neutral'
+        }

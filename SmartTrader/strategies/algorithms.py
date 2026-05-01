@@ -9,7 +9,6 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Callable
 from datetime import datetime, timedelta
-from config import *
 from utils.indian_indicators import calculate_vwap, calculate_supertrend, calculate_cpr, is_expiry_day, is_budget_day
 from utils.nse_data import convert_to_nse_format
 
@@ -477,6 +476,9 @@ class IndianMomentumAlgorithm(BaseAlgorithm):
             # 2. Supertrend Analysis
             df_with_st = calculate_supertrend(hist, self.supertrend_period, self.supertrend_multiplier)
 
+            # Guard against missing direction column
+            current_direction = 0
+            prev_direction = 0
             if 'direction' in df_with_st.columns:
                 current_direction = df_with_st['direction'].iloc[-1]
                 prev_direction = df_with_st['direction'].iloc[-2] if len(df_with_st) > 1 else current_direction
